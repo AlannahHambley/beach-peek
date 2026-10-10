@@ -1,0 +1,3 @@
+# generated hourly by the GitHub Action (and locally by build-beaches.js)
+out/
+node_modules/
