@@ -65,6 +65,12 @@ function tarEstimate({ waveFt, swellDir, windDir, windMph }){
       testedDate: f.attributes.StatusDate ? new Date(f.attributes.StatusDate).toISOString().slice(0,10) : null,
       testedDaysAgo: daysAgo(f.attributes.StatusDate),
       ecoli: f.attributes.e_coli_result ?? null,
+      // the rest of what the county publishes, so the app can show each reading against the
+      // state limit and quote the county's own note (values can be strings like "<10")
+      entero: f.attributes.entercoccus_result ?? null,
+      totalColiform: f.attributes.total_coliform_result ?? null,
+      ratioExceeded: /^y/i.test(f.attributes.exceed_fc_tc_ratio || ''),
+      notes: (f.attributes.Notes || '').replace(/\s+/g, ' ').trim() || null,
       source: 'SB County Ocean Water Monitoring'
     }
   }));
@@ -81,8 +87,15 @@ function tarEstimate({ waveFt, swellDir, windDir, windMph }){
 
   // 3) shared feeds: NWS alerts + tides + both buoys
   const alerts = await getJSON(`https://api.weather.gov/alerts/active?zone=${NWS_ZONE}`);
-  const rip = alerts.features.find(f => /rip|hazard|surf/i.test(f.properties.event)) || alerts.features[0] || null;
+  // ONLY alerts about the water count. (This used to fall back to the first alert of any
+  // kind, so a heat or wind advisory was reported as a rip warning — fixed 2026-10-12.)
+  const about = f => (f.properties.event || '') + ' ' + (f.properties.headline || '') + ' ' + (f.properties.description || '');
+  const watery = alerts.features.filter(f => /rip current|beach hazard|high surf/i.test(f.properties.event || ''));
+  const rip = watery.find(f => /rip current/i.test(about(f))) || watery[0] || null;
+  const tidy = s => (s || '').replace(/\s*\n\s*/g, ' ').replace(/\s+/g, ' ').trim() || null;
   const ripOut = rip ? { active: true, event: rip.properties.event, headline: rip.properties.headline,
+                         description: tidy(rip.properties.description), instruction: tidy(rip.properties.instruction),
+                         issued: rip.properties.sent || null, sender: rip.properties.senderName || null,
                          until: rip.properties.ends || rip.properties.expires, zone: NWS_ZONE } : { active: false };
   const tideJson = await getJSON(`https://api.tidesandcurrents.noaa.gov/api/prod/datagetter?product=predictions&application=beachpeek&begin_date=${ymd}&end_date=${ymd}&datum=MLLW&station=${TIDE_STATION}&time_zone=lst_ldt&units=english&interval=hilo&format=json`);
   const tides = (tideJson.predictions || []).map(p => ({ time: p.t, type: p.type === 'H' ? 'high' : 'low', ft: +p.v }));
