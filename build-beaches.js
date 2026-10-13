@@ -16,6 +16,26 @@ const UA = { 'User-Agent': '(beachpeek pipeline, hello@redbackpackstudios.com)' 
 const C2F = c => c == null ? null : +(c * 9 / 5 + 32).toFixed(1);
 const M2FT = m => m == null ? null : +(m * 3.28084).toFixed(1);
 const slug = s => s.toLowerCase().replace(/@/g, 'at').replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
+// Beaches people use that the county does NOT sample. Coordinates from OpenStreetMap
+// (checked 2026-10-12). Each one borrows the water reading of the nearest county sample
+// point and says so: water.sampled = false, water.borrowedFrom = { id, name, miles }.
+// A neighbour's reading is a guide, not a result — bacteria is very local (creek mouths).
+const EXTRA = [
+  { id: 'devereux',       name: 'Devereux',        lat: 34.4081, lon: -119.8766 },
+  { id: 'campus-point',   name: 'Campus Point',    lat: 34.4048, lon: -119.8441 },
+  { id: 'more-mesa',      name: 'More Mesa',       lat: 34.4181, lon: -119.8036 },
+  { id: 'mesa-lane',      name: 'Mesa Lane',       lat: 34.3974, lon: -119.7308 },
+  { id: 'thousand-steps', name: 'Thousand Steps',  lat: 34.3958, lon: -119.7135 },
+  { id: 'west-beach',     name: 'West Beach',      lat: 34.4096, lon: -119.6909 },
+  { id: 'miramar',        name: 'Miramar',         lat: 34.4195, lon: -119.6304 },
+  { id: 'rincon',         name: 'Rincon',          lat: 34.3742, lon: -119.4766 },
+];
+const milesBetween = (a, b) => {
+  const R = 3958.8, rad = d => d * Math.PI / 180;
+  const dLat = rad(b.lat - a.lat), dLon = rad(b.lon - a.lon);
+  const h = Math.sin(dLat / 2) ** 2 + Math.cos(rad(a.lat)) * Math.cos(rad(b.lat)) * Math.sin(dLon / 2) ** 2;
+  return 2 * R * Math.asin(Math.sqrt(h));
+};
 const daysAgo = iso => iso == null ? null : Math.round((Date.now() - new Date(iso)) / 86400000);
 
 async function getJSON(u){ const r = await fetch(u, { headers: UA }); if(!r.ok) throw new Error('HTTP '+r.status+' '+u.slice(0,60)); return r.json(); }
@@ -74,7 +94,14 @@ function tarEstimate({ waveFt, swellDir, windDir, windMph }){
       source: 'SB County Ocean Water Monitoring'
     }
   }));
-  console.log('  water quality: '+beaches.length+' beaches');
+  const sampledCount = beaches.length;
+  beaches.forEach(b => { b.water.sampled = true; });
+  EXTRA.forEach(x => {
+    const near = beaches.slice(0, sampledCount).map(b => ({ b, d: milesBetween(x, b) })).sort((p, q) => p.d - q.d)[0];
+    beaches.push({ id: x.id, name: x.name, lat: x.lat, lon: x.lon,
+      water: { ...near.b.water, sampled: false, borrowedFrom: { id: near.b.id, name: near.b.name, miles: +near.d.toFixed(1) } } });
+  });
+  console.log('  water quality: '+sampledCount+' sampled beaches + '+EXTRA.length+' that borrow the nearest sample');
 
   // 2) Open-Meteo forecast + marine — ONE multi-location call each
   const lats = beaches.map(b => b.lat).join(',');
@@ -104,7 +131,7 @@ function tarEstimate({ waveFt, swellDir, windDir, windMph }){
 
   // 4) normalize per beach
   const updated = new Date().toISOString();
-  const index = [];
+  const index = [], unsampled = [];
   beaches.forEach((b, i) => {
     const cf = fcArr[i] || {}, cm = marArr[i] || {};
     const cur = cf.current || {}, mcur = cm.current || {}, daily = cf.daily || {};
@@ -132,12 +159,12 @@ function tarEstimate({ waveFt, swellDir, windDir, windMph }){
       tar:   tarEstimate({ waveFt, swellDir, windDir: cur.wind_direction_10m, windMph: cur.wind_speed_10m })
     };
     fs.writeFileSync(path.join(OUT, b.id + '.json'), JSON.stringify(doc, null, 2));
-    index.push({ id: b.id, name: b.name, water: b.water.status, waterDaysAgo: b.water.testedDaysAgo,
+    (b.water.sampled ? index : unsampled).push({ id: b.id, name: b.name, sampled: b.water.sampled, water: b.water.status, waterDaysAgo: b.water.testedDaysAgo,
                  airF: doc.air.tempF, waveFt: doc.swell.heightFt, windMph: doc.wind.mph, waterF: doc.waterTemp.f,
                  tar: doc.tar.level });
   });
 
-  fs.writeFileSync(path.join(OUT, 'index.json'), JSON.stringify({ updated, zone: NWS_ZONE, tideStation: TIDE_STATION, rip: ripOut, beaches: index }, null, 2));
+  fs.writeFileSync(path.join(OUT, 'index.json'), JSON.stringify({ updated, zone: NWS_ZONE, tideStation: TIDE_STATION, rip: ripOut, beaches: index, unsampled }, null, 2));
   console.log('  wrote '+(beaches.length+1)+' files to out/\n');
-  console.table(index.map(b => ({ beach: b.name, water: b.water, airF: b.airF, waveFt: b.waveFt, wind: b.windMph, waterF: b.waterF, tar: b.tar })));
+  console.table(index.concat(unsampled).map(b => ({ beach: b.name, water: b.water, airF: b.airF, waveFt: b.waveFt, wind: b.windMph, waterF: b.waterF, tar: b.tar })));
 })();
