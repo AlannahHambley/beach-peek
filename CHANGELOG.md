@@ -2,6 +2,11 @@
 
 Newest first. Dates are when the change went live.
 
+## 2026-10-13 — privacy policy page (draft)
+- `privacy.html`: the draft privacy policy, published at Alannah's request and linked from
+  the app. Generated from the app repo's `PRIVACY.md` by `tools/privacy-page.js`; edit it
+  there, never here. `9a73981`.
+
 ## 2026-10-13 — the job retries a feed that hiccups
 - One HTTP 503 from Open-Meteo failed the 18:50 UTC run (Alannah got GitHub's failure
   email; the site kept its last good data). Downloads now get two more tries on a 5xx, a
