@@ -38,8 +38,24 @@ const milesBetween = (a, b) => {
 };
 const daysAgo = iso => iso == null ? null : Math.round((Date.now() - new Date(iso)) / 86400000);
 
-async function getJSON(u){ const r = await fetch(u, { headers: UA }); if(!r.ok) throw new Error('HTTP '+r.status+' '+u.slice(0,60)); return r.json(); }
-async function getText(u){ const r = await fetch(u, { headers: UA }); if(!r.ok) throw new Error('HTTP '+r.status); return r.text(); }
+// A feed that hiccups (a 5xx, a 429 or a dropped connection) gets two more tries before the
+// run fails, so one bad second at a provider doesn't cost an hourly update.
+const wait = ms => new Promise(r => setTimeout(r, ms));
+async function get(u){
+  let err;
+  for (let i = 0; i < 3; i++) {
+    if (i) await wait(4000 * i);
+    try {
+      const r = await fetch(u, { headers: UA });
+      if (r.ok) return r;
+      err = new Error('HTTP '+r.status+' '+u.slice(0,60));
+      if (r.status < 500 && r.status !== 429) break;   // a 4xx won't fix itself
+    } catch(e){ err = e; }
+  }
+  throw err;
+}
+async function getJSON(u){ return (await get(u)).json(); }
+async function getText(u){ return (await get(u)).text(); }
 
 // nearest NDBC buoy by longitude: 46053 = East SB, 46054 = West SB
 function buoyFor(lon){ return lon <= -120.0 ? '46054' : '46053'; }
