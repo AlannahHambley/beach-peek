@@ -2,7 +2,12 @@
 
 Newest first. Dates are when the change went live.
 
-## 2026-10-12 — eight beaches the county doesn't sample
+## 2026-10-13 — the job retries a feed that hiccups
+- One HTTP 503 from Open-Meteo failed the 18:50 UTC run (Alannah got GitHub's failure
+  email; the site kept its last good data). Downloads now get two more tries on a 5xx, a
+  429 or a dropped connection before the run fails. `cc6850a`.
+
+## 2026-10-13 — eight beaches the county doesn't sample (`c1436f3`)
 - Added Devereux, Campus Point, More Mesa, Mesa Lane, Thousand Steps, West Beach, Miramar and
   Rincon. Each has its own weather, waves and tide, and **borrows the water reading of the
   nearest county sample point**, marked `water.sampled: false` with
