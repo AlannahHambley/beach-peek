@@ -2,6 +2,12 @@
 
 Newest first. Dates are when the change went live.
 
+## 2026-10-14 — rain from the county's gauges
+- New per-beach `rain`: { gauge, gaugeId, miles, last72in, source } — the 3-day total at
+  the nearest low, near-coast Santa Barbara County Flood Control gauge (read hourly from
+  rain.cosbpw.net). The app shows a rain caution at 0.2 in or more. If the gauge page can't
+  be read, `rain` is null and nothing breaks.
+
 ## 2026-10-14 — real buoy water temperature; tides yesterday → tomorrow (`10ec11d`)
 - NOAA buoy 46053 sends water temperature on alternate rows; the job read only the newest
   row, so it always fell back to Open-Meteo's estimate. Each buoy value now comes from the
