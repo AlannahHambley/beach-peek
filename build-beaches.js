@@ -11,7 +11,8 @@ const NWS_ZONE = 'CAZ039';           // SB south-coast beaches (rip/hazards)
 const TIDE_STATION = '9411340';      // Santa Barbara
 const OUT = path.join(__dirname, 'out');
 
-const ymd = new Date().toLocaleDateString('en-CA', { timeZone: 'America/Los_Angeles' }).replace(/-/g, '');
+const laDay = ms => new Date(ms).toLocaleDateString('en-CA', { timeZone: 'America/Los_Angeles' }).replace(/-/g, '');
+const ymd = laDay(Date.now()), ymdBefore = laDay(Date.now() - 86400e3), ymdAfter = laDay(Date.now() + 86400e3);
 const UA = { 'User-Agent': '(beachpeek pipeline, hello@redbackpackstudios.com)' };
 const C2F = c => c == null ? null : +(c * 9 / 5 + 32).toFixed(1);
 const M2FT = m => m == null ? null : +(m * 3.28084).toFixed(1);
@@ -60,14 +61,20 @@ async function getText(u){ return (await get(u)).text(); }
 // nearest NDBC buoy by longitude: 46053 = East SB, 46054 = West SB
 function buoyFor(lon){ return lon <= -120.0 ? '46054' : '46053'; }
 
+// Each value comes from the newest row that HAS it, within the last 3 hours. (The buoy sends
+// some readings only on alternate rows — water temp, waves — so taking just the newest row
+// made a working sensor look "down". Fixed 2026-10-14.)
 async function buoyLatest(id){
   try {
     const t = await getText(`https://www.ndbc.noaa.gov/data/realtime2/${id}.txt`);
     const lines = t.split('\n');
-    const hdr = lines[0].trim().split(/\s+/);
-    const row = lines.find((l,i) => i>1 && l.trim() && !l.startsWith('#')).trim().split(/\s+/);
-    const g = k => { const i = hdr.indexOf(k); const v = i>=0 ? row[i] : 'MM'; return v === 'MM' ? null : v; };
-    return { wvht_m: g('WVHT') && +g('WVHT'), dpd_s: g('DPD') && +g('DPD'), mwd_deg: g('MWD') && +g('MWD'), wtmp_c: g('WTMP') && +g('WTMP') };
+    const hdr = lines[0].replace(/^#/, '').trim().split(/\s+/);
+    const rows = lines.filter(l => l.trim() && !l.startsWith('#')).map(l => l.trim().split(/\s+/));
+    const when = r => Date.UTC(+r[0], +r[1] - 1, +r[2], +r[3], +r[4]);
+    const newest = rows.length ? when(rows[0]) : 0;
+    const g = k => { const i = hdr.indexOf(k); if (i < 0) return null;
+      const r = rows.find(r => r[i] && r[i] !== 'MM' && newest - when(r) <= 3 * 3600e3); return r ? +r[i] : null; };
+    return { wvht_m: g('WVHT'), dpd_s: g('DPD'), mwd_deg: g('MWD'), wtmp_c: g('WTMP') };
   } catch(e){ return { error: e.message }; }
 }
 
@@ -140,7 +147,7 @@ function tarEstimate({ waveFt, swellDir, windDir, windMph }){
                          description: tidy(rip.properties.description), instruction: tidy(rip.properties.instruction),
                          issued: rip.properties.sent || null, sender: rip.properties.senderName || null,
                          until: rip.properties.ends || rip.properties.expires, zone: NWS_ZONE } : { active: false };
-  const tideJson = await getJSON(`https://api.tidesandcurrents.noaa.gov/api/prod/datagetter?product=predictions&application=beachpeek&begin_date=${ymd}&end_date=${ymd}&datum=MLLW&station=${TIDE_STATION}&time_zone=lst_ldt&units=english&interval=hilo&format=json`);
+  const tideJson = await getJSON(`https://api.tidesandcurrents.noaa.gov/api/prod/datagetter?product=predictions&application=beachpeek&begin_date=${ymdBefore}&end_date=${ymdAfter}&datum=MLLW&station=${TIDE_STATION}&time_zone=lst_ldt&units=english&interval=hilo&format=json`);
   const tides = (tideJson.predictions || []).map(p => ({ time: p.t, type: p.type === 'H' ? 'high' : 'low', ft: +p.v }));
   const buoys = { '46053': await buoyLatest('46053'), '46054': await buoyLatest('46054') };
   console.log('  rip: '+(ripOut.active?ripOut.event:'none')+' · tides: '+tides.length+' hi/lo · buoys ok\n');
