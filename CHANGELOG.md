@@ -2,6 +2,13 @@
 
 Newest first. Dates are when the change went live.
 
+## 2026-10-14 — real buoy water temperature; tides yesterday → tomorrow (`10ec11d`)
+- NOAA buoy 46053 sends water temperature on alternate rows; the job read only the newest
+  row, so it always fell back to Open-Meteo's estimate. Each buoy value now comes from the
+  newest row that has it (within 3 hours).
+- Tide predictions span yesterday to tomorrow (`tide.hilo` now has ~12 points), so the tide
+  after the day's last high/low and just after midnight is worked out, not held flat.
+
 ## 2026-10-14 — privacy page: tar answers
 - The draft policy now lists the app's "Was it actually tarry?" answers as kept on the
   phone. `e5fe6aa`.
