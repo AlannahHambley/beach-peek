@@ -2,6 +2,10 @@
 
 Newest first. Dates are when the change went live.
 
+## 2026-10-14 — privacy page: tar answers
+- The draft policy now lists the app's "Was it actually tarry?" answers as kept on the
+  phone. `e5fe6aa`.
+
 ## 2026-10-13 — privacy policy page (draft)
 - `privacy.html`: the draft privacy policy, published at Alannah's request and linked from
   the app. Generated from the app repo's `PRIVACY.md` by `tools/privacy-page.js`; edit it
