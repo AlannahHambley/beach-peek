@@ -55,6 +55,52 @@ async function get(u){
   }
   throw err;
 }
+// ---- county rain gauges ----
+// Low, near-coast gauges only (Stanwood 670 ft and Goleta Road Yard 285 ft are up in the foothills).
+// Positions read from each gauge's page on rain.cosbpw.net, 2026-10-14.
+const GAUGES = [
+  { id: 73,  name: 'Goleta Fire Station',           lat: 34.4430, lon: -119.8536 },
+  { id: 184, name: 'Goleta Water District',         lat: 34.4369, lon: -119.7856 },
+  { id: 172, name: 'Santa Barbara City College',    lat: 34.4053, lon: -119.6958 },
+  { id: 55,  name: 'Santa Barbara County Building', lat: 34.4261, lon: -119.7035 },
+  { id: 47,  name: 'Montecito',                     lat: 34.4275, lon: -119.6404 },
+  { id: 181, name: 'Summerland',                    lat: 34.4153, lon: -119.5814 },
+  { id: 39,  name: 'Carpinteria Fire Station',      lat: 34.3970, lon: -119.5177 },
+];
+const RAIN_PAGE = 'https://rain.cosbpw.net/rain/?view=8bc6e88f-eeab-4281-9d92-3d723016e945&view_group=91de5db1-343e-77fd-8c96-dcc48c5f1e53&group=d80f114d-de82-a35d-ff28-ca9aab7e41f2';
+// the site wants a session cookie before it shows the table: follow its redirects, keeping cookies
+async function getWithCookies(u){
+  let jar = {}, url = u;
+  for (let i = 0; i < 10; i++) {
+    const r = await fetch(url, { headers: { ...UA, Cookie: Object.entries(jar).map(([k, v]) => k + '=' + v).join('; ') }, redirect: 'manual' });
+    const sc = typeof r.headers.getSetCookie === 'function' ? r.headers.getSetCookie() : [];
+    sc.forEach(c => { const m = c.match(/^([^=]+)=([^;]*)/); if (m) jar[m[1]] = m[2]; });
+    if (r.status >= 300 && r.status < 400) { url = new URL(r.headers.get('location'), url).href; continue; }
+    if (url !== u && r.ok) { url = u; continue; }          // landed elsewhere with a cookie: ask again
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    return r.text();
+  }
+  throw new Error('too many redirects');
+}
+// { gaugeId: inches in the last 3 days }, or null if the page can't be read
+async function countyRain3Day(){
+  try {
+    const html = (await getWithCookies(RAIN_PAGE)).replace(/\s+/g, ' ');
+    const out = {};
+    html.split('<tr>').slice(1).forEach(row => {
+      const m = row.match(/site_id=(\d+)/); if (!m) return;
+      const v = [...row.matchAll(/<td>\s*(?:<strong>)?\s*([0-9.]+)(?:in)?\s*(?:<\/strong>)?\s*<\/td>/g)].map(x => +x[1]);
+      if (v.length >= 9) out[m[1]] = v[8];               // columns: 15m 30m 1h 3h 6h 12h 24h 48h 3d 7d 30d
+    });
+    return Object.keys(out).length ? out : null;
+  } catch (e) { console.log('  rain gauges: ' + e.message); return null; }
+}
+function rainFor(b, rain3){
+  if (!rain3) return null;
+  const g = GAUGES.filter(x => rain3[x.id] != null).map(x => ({ x, d: milesBetween(b, x) })).sort((p, q) => p.d - q.d)[0];
+  return g ? { gauge: g.x.name, gaugeId: g.x.id, miles: +g.d.toFixed(1), last72in: rain3[g.x.id], source: 'Santa Barbara County Flood Control rain gauge, past 3 days' } : null;
+}
+
 async function getJSON(u){ return (await get(u)).json(); }
 async function getText(u){ return (await get(u)).text(); }
 
@@ -147,6 +193,11 @@ function tarEstimate({ waveFt, swellDir, windDir, windMph }){
                          description: tidy(rip.properties.description), instruction: tidy(rip.properties.instruction),
                          issued: rip.properties.sent || null, sender: rip.properties.senderName || null,
                          until: rip.properties.ends || rip.properties.expires, zone: NWS_ZONE } : { active: false };
+  // RAIN, measured: Santa Barbara County Flood Control's gauges (rain.cosbpw.net), 3-day totals.
+  // Each beach uses its nearest low-elevation coastal gauge. (The weather model invented a
+  // 0.38 in shower at Hendry's on 2026-10-14 that no gauge saw, so the model isn't used.)
+  const rain3 = await countyRain3Day();
+  console.log('  rain gauges: ' + (rain3 ? Object.keys(rain3).length + ' read' : 'skipped'));
   const tideJson = await getJSON(`https://api.tidesandcurrents.noaa.gov/api/prod/datagetter?product=predictions&application=beachpeek&begin_date=${ymdBefore}&end_date=${ymdAfter}&datum=MLLW&station=${TIDE_STATION}&time_zone=lst_ldt&units=english&interval=hilo&format=json`);
   const tides = (tideJson.predictions || []).map(p => ({ time: p.t, type: p.type === 'H' ? 'high' : 'low', ft: +p.v }));
   const buoys = { '46053': await buoyLatest('46053'), '46054': await buoyLatest('46054') };
@@ -179,6 +230,7 @@ function tarEstimate({ waveFt, swellDir, windDir, windMph }){
                windDir: fh.wind_direction_10m || [], uv: fh.uv_index || [], waveFt: (mh.wave_height || []).map(M2FT) },
       sun:   { sunrise: daily.sunrise?.[0] ?? null, sunset: daily.sunset?.[0] ?? null },
       rip:   ripOut,
+      rain:  rainFor(b, rain3),
       tar:   tarEstimate({ waveFt, swellDir, windDir: cur.wind_direction_10m, windMph: cur.wind_speed_10m })
     };
     fs.writeFileSync(path.join(OUT, b.id + '.json'), JSON.stringify(doc, null, 2));
