@@ -150,7 +150,8 @@ function tarEstimate({ waveFt, swellDir, windDir, windMph }){
     lon: +f.geometry.x.toFixed(5),
     water: {
       status: f.attributes.Beach_status,                       // Open | Warning | Closed
-      advisory: /warn|close/i.test(f.attributes.Beach_status || ''),
+      // county statuses: Open · Warning · Closed · Rain (rain advisory) · "Open *" (open with restrictions)
+      advisory: /warn|close|rain/i.test(f.attributes.Beach_status || ''),
       testedDate: f.attributes.StatusDate ? new Date(f.attributes.StatusDate).toISOString().slice(0,10) : null,
       testedDaysAgo: daysAgo(f.attributes.StatusDate),
       ecoli: f.attributes.e_coli_result ?? null,
