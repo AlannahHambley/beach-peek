@@ -2,6 +2,11 @@
 
 Newest first. Dates are when the change went live.
 
+## 2026-10-15 — the county's Rain status counts as an advisory
+- The county's feed has five statuses (Open, Warning, Closed, Rain, "Open *" = open with
+  restrictions). `water.advisory` now includes Rain (a county rain advisory); it used to be
+  Warning and Closed only. `water.status` still carries the county's own word.
+
 ## 2026-10-14 — rain from the county's gauges
 - New per-beach `rain`: { gauge, gaugeId, miles, last72in, source } — the 3-day total at
   the nearest low, near-coast Santa Barbara County Flood Control gauge (read hourly from
