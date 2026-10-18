@@ -12,7 +12,7 @@ const TIDE_STATION = '9411340';      // Santa Barbara
 const OUT = path.join(__dirname, 'out');
 
 const laDay = ms => new Date(ms).toLocaleDateString('en-CA', { timeZone: 'America/Los_Angeles' }).replace(/-/g, '');
-const ymd = laDay(Date.now()), ymdBefore = laDay(Date.now() - 86400e3), ymdAfter = laDay(Date.now() + 86400e3);
+const ymd = laDay(Date.now()), ymdBefore = laDay(Date.now() - 86400e3), ymdAfter = laDay(Date.now() + 4 * 86400e3);   // tides run 4 days out: the app shows today + 2 more
 const UA = { 'User-Agent': '(beachpeek pipeline, hello@redbackpackstudios.com)' };
 const C2F = c => c == null ? null : +(c * 9 / 5 + 32).toFixed(1);
 const M2FT = m => m == null ? null : +(m * 3.28084).toFixed(1);
@@ -176,8 +176,8 @@ function tarEstimate({ waveFt, swellDir, windDir, windMph }){
   // 2) Open-Meteo forecast + marine — ONE multi-location call each
   const lats = beaches.map(b => b.lat).join(',');
   const lons = beaches.map(b => b.lon).join(',');
-  const fc = await getJSON(`https://api.open-meteo.com/v1/forecast?latitude=${lats}&longitude=${lons}&current=temperature_2m,wind_speed_10m,wind_direction_10m,uv_index&hourly=temperature_2m,wind_speed_10m,wind_direction_10m,uv_index&daily=sunrise,sunset,uv_index_max&temperature_unit=fahrenheit&wind_speed_unit=mph&timezone=America%2FLos_Angeles&forecast_days=1`);
-  const mar = await getJSON(`https://marine-api.open-meteo.com/v1/marine?latitude=${lats}&longitude=${lons}&current=wave_height,wave_period,wave_direction,sea_surface_temperature&hourly=wave_height,wave_period,wave_direction&timezone=America%2FLos_Angeles&forecast_days=1`);
+  const fc = await getJSON(`https://api.open-meteo.com/v1/forecast?latitude=${lats}&longitude=${lons}&current=temperature_2m,wind_speed_10m,wind_direction_10m,uv_index&hourly=temperature_2m,wind_speed_10m,wind_direction_10m,uv_index,precipitation_probability,precipitation&daily=sunrise,sunset,uv_index_max,precipitation_sum,precipitation_probability_max&temperature_unit=fahrenheit&wind_speed_unit=mph&precipitation_unit=inch&timezone=America%2FLos_Angeles&forecast_days=3`);
+  const mar = await getJSON(`https://marine-api.open-meteo.com/v1/marine?latitude=${lats}&longitude=${lons}&current=wave_height,wave_period,wave_direction,sea_surface_temperature&hourly=wave_height,wave_period,wave_direction&timezone=America%2FLos_Angeles&forecast_days=3`);
   const fcArr = Array.isArray(fc) ? fc : [fc];
   const marArr = Array.isArray(mar) ? mar : [mar];
   console.log('  open-meteo: forecast '+fcArr.length+' · marine '+marArr.length);
@@ -228,8 +228,11 @@ function tarEstimate({ waveFt, swellDir, windDir, windMph }){
       waterTemp: { f: waterF, source: waterSrc },
       tide:  { station: TIDE_STATION, hilo: tides },
       hourly:{ time: fh.time || [], airF: fh.temperature_2m || [], windMph: fh.wind_speed_10m || [],
-               windDir: fh.wind_direction_10m || [], uv: fh.uv_index || [], waveFt: (mh.wave_height || []).map(M2FT) },
+               windDir: fh.wind_direction_10m || [], uv: fh.uv_index || [], waveFt: (mh.wave_height || []).map(M2FT),
+               rainProb: fh.precipitation_probability || [], rainIn: fh.precipitation || [] },   // 72 hours: today, tomorrow, the day after
       sun:   { sunrise: daily.sunrise?.[0] ?? null, sunset: daily.sunset?.[0] ?? null },
+      days:  (daily.time || []).map((d, k) => ({ date: d, sunrise: daily.sunrise?.[k] ?? null, sunset: daily.sunset?.[k] ?? null, uvMax: daily.uv_index_max?.[k] ?? null,
+               rainProbMax: daily.precipitation_probability_max?.[k] ?? null, rainIn: daily.precipitation_sum?.[k] ?? null })),
       rip:   ripOut,
       rain:  rainFor(b, rain3),
       tar:   tarEstimate({ waveFt, swellDir, windDir: cur.wind_direction_10m, windMph: cur.wind_speed_10m })
