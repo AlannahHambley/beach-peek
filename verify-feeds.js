@@ -4,7 +4,7 @@
 
 const LAT = 34.4017, LON = -119.6919;      // Leadbetter Beach, Santa Barbara
 const BUOY = '46053';                       // East Santa Barbara
-const TIDE_STATION = '9411340';             // Santa Barbara
+const TIDE_STATIONS = ['9411340', '9411270', '9411399'];   // Santa Barbara · Rincon Island · Gaviota
 const NWS_ZONE = 'CAZ039';                  // SB south coast beaches
 const ARCGIS = 'https://services.arcgis.com/KkJhFbLnXVqahKz2/arcgis/rest/services/Ocean_Water_Quality_Points_Public/FeatureServer/0/query?where=1=1&outFields=*&f=json';
 
@@ -52,7 +52,7 @@ async function run(name, fn){
     line('     latest: WVHT '+pick('WVHT')+' m · DPD '+pick('DPD')+' s · MWD '+pick('MWD')+'° · WTMP '+pick('WTMP')+'°C');
   });
 
-  await run('NOAA tides (station '+TIDE_STATION+', hi/lo)', async () => {
+  for (const TIDE_STATION of TIDE_STATIONS) await run('NOAA tides (station '+TIDE_STATION+', hi/lo)', async () => {
     const u = `https://api.tidesandcurrents.noaa.gov/api/prod/datagetter?product=predictions&application=beachpeek&begin_date=${ymd}&end_date=${ymd}&datum=MLLW&station=${TIDE_STATION}&time_zone=lst_ldt&units=english&interval=hilo&format=json`;
     const d = await getJSON(u);
     (d.predictions||[]).forEach(p => line('      '+p.t+'  '+(p.type==='H'?'HIGH':'low ')+'  '+p.v+' ft'));

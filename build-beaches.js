@@ -8,7 +8,15 @@ const path = require('path');
 
 const ARCGIS = 'https://services.arcgis.com/KkJhFbLnXVqahKz2/arcgis/rest/services/Ocean_Water_Quality_Points_Public/FeatureServer/0/query?where=1=1&outFields=*&returnGeometry=true&outSR=4326&f=json';
 const NWS_ZONE = 'CAZ039';           // SB south-coast beaches (rip/hazards)
-const TIDE_STATION = '9411340';      // Santa Barbara
+// NOAA tide-prediction stations on our coast. Each beach uses the nearest one (Carpinteria and
+// Rincon → Rincon Island; the far-west beaches → Gaviota). Positions from NOAA's station
+// metadata API, checked 2026-10-22.
+const TIDE_STATIONS = [
+  { id: '9411340', name: 'Santa Barbara', lat: 34.4046, lon: -119.6925 },
+  { id: '9411270', name: 'Rincon Island', lat: 34.3483, lon: -119.4430 },
+  { id: '9411399', name: 'Gaviota',       lat: 34.4694, lon: -120.2283 },
+];
+const TIDE_STATION = TIDE_STATIONS[0].id;   // the default, kept in index.json for the old web page
 const OUT = path.join(__dirname, 'out');
 
 const laDay = ms => new Date(ms).toLocaleDateString('en-CA', { timeZone: 'America/Los_Angeles' }).replace(/-/g, '');
@@ -199,10 +207,14 @@ function tarEstimate({ waveFt, swellDir, windDir, windMph }){
   // 0.38 in shower at Hendry's on 2026-10-14 that no gauge saw, so the model isn't used.)
   const rain3 = await countyRain3Day();
   console.log('  rain gauges: ' + (rain3 ? Object.keys(rain3).length + ' read' : 'skipped'));
-  const tideJson = await getJSON(`https://api.tidesandcurrents.noaa.gov/api/prod/datagetter?product=predictions&application=beachpeek&begin_date=${ymdBefore}&end_date=${ymdAfter}&datum=MLLW&station=${TIDE_STATION}&time_zone=lst_ldt&units=english&interval=hilo&format=json`);
-  const tides = (tideJson.predictions || []).map(p => ({ time: p.t, type: p.type === 'H' ? 'high' : 'low', ft: +p.v }));
+  const tides = {};
+  for (const st of TIDE_STATIONS) {
+    const tideJson = await getJSON(`https://api.tidesandcurrents.noaa.gov/api/prod/datagetter?product=predictions&application=beachpeek&begin_date=${ymdBefore}&end_date=${ymdAfter}&datum=MLLW&station=${st.id}&time_zone=lst_ldt&units=english&interval=hilo&format=json`);
+    tides[st.id] = (tideJson.predictions || []).map(p => ({ time: p.t, type: p.type === 'H' ? 'high' : 'low', ft: +p.v }));
+  }
+  const tideFor = b => TIDE_STATIONS.map(st => ({ st, d: milesBetween(b, st) })).sort((p, q) => p.d - q.d)[0];
   const buoys = { '46053': await buoyLatest('46053'), '46054': await buoyLatest('46054') };
-  console.log('  rip: '+(ripOut.active?ripOut.event:'none')+' · tides: '+tides.length+' hi/lo · buoys ok\n');
+  console.log('  rip: '+(ripOut.active?ripOut.event:'none')+' · tides: '+TIDE_STATIONS.map(st => st.name+' '+tides[st.id].length).join(', ')+' hi/lo · buoys ok\n');
 
   // 4) normalize per beach
   const updated = new Date().toISOString();
@@ -217,6 +229,7 @@ function tarEstimate({ waveFt, swellDir, windDir, windMph }){
     // water temp: prefer buoy WTMP, fall back to Open-Meteo SST
     const waterF = buoy.wtmp_c != null ? C2F(buoy.wtmp_c) : C2F(mcur.sea_surface_temperature);
     const waterSrc = buoy.wtmp_c != null ? ('NDBC '+buoyFor(b.lon)) : 'Open-Meteo SST (est.)';
+    const tn = tideFor(b);
 
     const doc = {
       id: b.id, name: b.name, coords: { lat: b.lat, lon: b.lon },
@@ -226,7 +239,7 @@ function tarEstimate({ waveFt, swellDir, windDir, windMph }){
       wind:  { mph: cur.wind_speed_10m ?? null, dir: cur.wind_direction_10m ?? null },
       swell: { heightFt: waveFt, periodS: mcur.wave_period ?? buoy.dpd_s ?? null, dir: swellDir, source: 'Open-Meteo Marine' },
       waterTemp: { f: waterF, source: waterSrc },
-      tide:  { station: TIDE_STATION, hilo: tides },
+      tide:  { station: tn.st.id, stationName: tn.st.name, miles: +tn.d.toFixed(1), hilo: tides[tn.st.id] },
       hourly:{ time: fh.time || [], airF: fh.temperature_2m || [], windMph: fh.wind_speed_10m || [],
                windDir: fh.wind_direction_10m || [], uv: fh.uv_index || [], waveFt: (mh.wave_height || []).map(M2FT),
                rainProb: fh.precipitation_probability || [], rainIn: fh.precipitation || [] },   // 72 hours: today, tomorrow, the day after
@@ -243,7 +256,7 @@ function tarEstimate({ waveFt, swellDir, windDir, windMph }){
                  tar: doc.tar.level });
   });
 
-  fs.writeFileSync(path.join(OUT, 'index.json'), JSON.stringify({ updated, zone: NWS_ZONE, tideStation: TIDE_STATION, rip: ripOut, beaches: index, unsampled }, null, 2));
+  fs.writeFileSync(path.join(OUT, 'index.json'), JSON.stringify({ updated, zone: NWS_ZONE, tideStation: TIDE_STATION, tideStations: TIDE_STATIONS, rip: ripOut, beaches: index, unsampled }, null, 2));
   console.log('  wrote '+(beaches.length+1)+' files to out/\n');
   console.table(index.concat(unsampled).map(b => ({ beach: b.name, water: b.water, airF: b.airF, waveFt: b.waveFt, wind: b.windMph, waterF: b.waterF, tar: b.tar })));
 })();
