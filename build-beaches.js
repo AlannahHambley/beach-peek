@@ -90,7 +90,11 @@ async function getWithCookies(u){
   }
   throw new Error('too many redirects');
 }
-// { gaugeId: inches in the last 3 days }, or null if the page can't be read
+// { gaugeId: inches in the last 3 days }, or null if the page can't be read.
+// Also fills GAUGE_RECENT[gaugeId] with the short windows (15m … 24h) and when they were read: the app
+// uses them for 'raining now' and for today's past hours (2026-11-13: every forecast model missed
+// an afternoon of rain at Leadbetter that this gauge measured).
+const GAUGE_RECENT = {};
 async function countyRain3Day(){
   try {
     const html = (await getWithCookies(RAIN_PAGE)).replace(/\s+/g, ' ');
@@ -99,6 +103,7 @@ async function countyRain3Day(){
       const m = row.match(/site_id=(\d+)/); if (!m) return;
       const v = [...row.matchAll(/<td>\s*(?:<strong>)?\s*([0-9.]+)(?:in)?\s*(?:<\/strong>)?\s*<\/td>/g)].map(x => +x[1]);
       if (v.length >= 9) out[m[1]] = v[8];               // columns: 15m 30m 1h 3h 6h 12h 24h 48h 3d 7d 30d
+      if (v.length >= 7) GAUGE_RECENT[m[1]] = { m15: v[0], h1: v[2], h3: v[3], h6: v[4], h12: v[5], h24: v[6], asOf: new Date().toISOString() };
     });
     return Object.keys(out).length ? out : null;
   } catch (e) { console.log('  rain gauges: ' + e.message); return null; }
@@ -106,7 +111,7 @@ async function countyRain3Day(){
 function rainFor(b, rain3){
   if (!rain3) return null;
   const g = GAUGES.filter(x => rain3[x.id] != null).map(x => ({ x, d: milesBetween(b, x) })).sort((p, q) => p.d - q.d)[0];
-  return g ? { gauge: g.x.name, gaugeId: g.x.id, miles: +g.d.toFixed(1), last72in: rain3[g.x.id], source: 'Santa Barbara County Flood Control rain gauge, past 3 days' } : null;
+  return g ? { gauge: g.x.name, gaugeId: g.x.id, miles: +g.d.toFixed(1), last72in: rain3[g.x.id], recent: GAUGE_RECENT[g.x.id] || null, source: 'Santa Barbara County Flood Control rain gauge, past 3 days' } : null;
 }
 
 async function getJSON(u){ return (await get(u)).json(); }
