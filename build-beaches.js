@@ -114,6 +114,53 @@ function rainFor(b, rain3){
   return g ? { gauge: g.x.name, gaugeId: g.x.id, miles: +g.d.toFixed(1), last72in: rain3[g.x.id], recent: GAUGE_RECENT[g.x.id] || null, source: 'Santa Barbara County Flood Control rain gauge, past 3 days' } : null;
 }
 
+// ---- waves at the beach: CDIP MOP (Scripps), not the open-ocean model ----
+// The open-ocean model (Open-Meteo Marine) read ~3× too high here: the Channel Islands and Point
+// Conception block most swell. CDIP's MOP model gives the height just off each stretch of shore
+// (~10 m deep), every ~100 m. Checked 2026-11-14 at Leadbetter: CDIP 1.1–2.2 ft, Open-Meteo 3.5–8.5 ft.
+// Free for public use, unaltered, credited "Data courtesy of CDIP" with a link (cdip.ucsd.edu
+// data_access page). QC: waveFlagPrimary 1 = good, 4 = bad (MOP netCDF doc) — bad ones are skipped.
+// mop-points.json = every Santa Barbara County point's position (read once, 2026-11-14).
+const MOP_POINTS = (() => { try { return JSON.parse(fs.readFileSync(path.join(__dirname, 'mop-points.json'), 'utf8')).points; } catch (e) { return []; } })();
+const MOP = 'https://thredds.cdip.ucsd.edu/thredds/dodsC/cdip/model/MOP_alongshore/';
+function mopFor(b){
+  const p = MOP_POINTS.map(x => ({ x, d: milesBetween(b, { lat: x[1], lon: x[2] }) })).sort((p1, p2) => p1.d - p2.d)[0];
+  return p && p.d < 2 ? { id: p.x[0], miles: +p.d.toFixed(2) } : null;
+}
+// one CDIP file: [{ t (ms), ft }] for the good records; `last` = only the newest n records
+async function mopSeries(file, last){
+  const dds = await (await fetch(MOP + file + '.dds', { headers: UA })).text();
+  const m = dds.match(/waveTime\[waveTime = (\d+)\]/); if (!m) throw new Error('no waveTime in ' + file);
+  const n = +m[1], a = last ? Math.max(0, n - last) : 0, r = encodeURIComponent(`[${a}:1:${n - 1}]`);
+  const t = await (await fetch(MOP + file + '.ascii?waveTime' + r + ',waveHs' + r + ',waveFlagPrimary' + r, { headers: UA })).text();
+  const v = {};
+  for (const x of t.split('-----').pop().matchAll(/(\w+)\[\d+\]\s*\n([^\n]+)/g)) v[x[1]] = x[2].split(/,\s*/).map(Number);
+  if (!v.waveTime || !v.waveHs) throw new Error('unreadable ' + file);
+  return v.waveTime.map((s, i) => ({ t: s * 1000, ft: v.waveHs[i] * 3.28084, ok: v.waveFlagPrimary ? v.waveFlagPrimary[i] === 1 : true })).filter(p => p.ok && p.ft >= 0 && p.ft < 60);
+}
+// nowcast (hourly, to the present) + forecast (3-hourly, ~6 days ahead)
+async function mopRead(id){
+  const [now, fc] = await Promise.all([mopSeries(id + '_nowcast.nc', 36), mopSeries(id + '_forecast.nc', 0).catch(() => [])]);
+  return { now, fc };
+}
+// the height at a moment: the nowcast for the past and now; the forecast after that, nudged to
+// meet the latest nowcast and easing back to the plain forecast over 48 h (CDIP's forecast ran
+// ~0.5 ft under its own nowcast at Leadbetter on 2026-11-11…14, closing over a couple of days)
+function mopAt(s, t){
+  if (!s || !s.now.length) return null;
+  const last = s.now[s.now.length - 1];
+  if (t <= last.t + 30 * 60e3) {
+    const near = s.now.reduce((p, q) => (Math.abs(q.t - t) < Math.abs(p.t - t) ? q : p), s.now[0]);
+    return Math.abs(near.t - t) <= 90 * 60e3 ? near.ft : null;
+  }
+  const f = s.fc; if (!f.length) return null;
+  const lerp = x => { for (let i = 0; i < f.length - 1; i++) if (x >= f[i].t && x <= f[i + 1].t) return f[i].ft + (f[i + 1].ft - f[i].ft) * (x - f[i].t) / (f[i + 1].t - f[i].t); return null; };
+  const base = lerp(t), atLast = lerp(last.t);
+  if (base == null) return null;
+  const off = atLast == null ? 0 : last.ft - atLast, fade = Math.max(0, 1 - (t - last.t) / (48 * 3600e3));
+  return Math.max(0, base + off * fade);
+}
+
 async function getJSON(u){ return (await get(u)).json(); }
 async function getText(u){ return (await get(u)).text(); }
 
@@ -222,6 +269,15 @@ function tarEstimate({ waveFt, swellDir, windDir, windMph }){
   console.log('  rip: '+(ripOut.active?ripOut.event:'none')+' · tides: '+TIDE_STATIONS.map(st => st.name+' '+tides[st.id].length).join(', ')+' hi/lo · buoys ok\n');
 
   // 4) normalize per beach
+  // waves at the beach: each beach's nearest CDIP point (several beaches can share one)
+  const mopOf = {}, mopData = {};
+  beaches.forEach(b => { mopOf[b.id] = mopFor(b); });
+  const mopIds = [...new Set(Object.values(mopOf).filter(Boolean).map(m => m.id))];
+  for (let k = 0; k < mopIds.length; k += 6) {
+    await Promise.all(mopIds.slice(k, k + 6).map(id => mopRead(id).then(s => { mopData[id] = s; }).catch(e => console.log('  cdip ' + id + ': ' + e.message))));
+  }
+  console.log('  cdip waves: ' + Object.keys(mopData).length + ' of ' + mopIds.length + ' points read');
+
   const updated = new Date().toISOString();
   const index = [], unsampled = [];
   beaches.forEach((b, i) => {
@@ -229,7 +285,15 @@ function tarEstimate({ waveFt, swellDir, windDir, windMph }){
     const cur = cf.current || {}, mcur = cm.current || {}, daily = cf.daily || {};
     const fh = cf.hourly || {}, mh = cm.hourly || {};
     const buoy = buoys[buoyFor(b.lon)] || {};
-    const waveFt = M2FT(mcur.wave_height);
+    // CDIP when we have it, the open-ocean model only as a fallback
+    const mop = mopOf[b.id], ms = mop && mopData[mop.id];
+    const offMs = (cf.utc_offset_seconds || 0) * 1000, nowMop = ms ? mopAt(ms, Date.now()) : null;
+    const hourlyWave = (fh.time || []).map((t, k) => {
+      const v = ms ? mopAt(ms, Date.parse(t + 'Z') - offMs) : null;
+      return v != null ? +v.toFixed(1) : M2FT((mh.wave_height || [])[k]);
+    });
+    const waveFt = nowMop != null ? +nowMop.toFixed(1) : M2FT(mcur.wave_height);
+    const waveSrc = nowMop != null ? 'CDIP MOP ' + mop.id : 'Open-Meteo Marine';
     const swellDir = mcur.wave_direction ?? buoy.mwd_deg ?? null;
     // water temp: prefer buoy WTMP, fall back to Open-Meteo SST
     const waterF = buoy.wtmp_c != null ? C2F(buoy.wtmp_c) : C2F(mcur.sea_surface_temperature);
@@ -242,11 +306,11 @@ function tarEstimate({ waveFt, swellDir, windDir, windMph }){
       water: b.water,
       air:   { tempF: cur.temperature_2m ?? null, uv: cur.uv_index ?? null, uvMax: daily.uv_index_max?.[0] ?? null },
       wind:  { mph: cur.wind_speed_10m ?? null, dir: cur.wind_direction_10m ?? null },
-      swell: { heightFt: waveFt, periodS: mcur.wave_period ?? buoy.dpd_s ?? null, dir: swellDir, source: 'Open-Meteo Marine' },
+      swell: { heightFt: waveFt, periodS: mcur.wave_period ?? buoy.dpd_s ?? null, dir: swellDir, source: waveSrc, cdip: mop && ms ? { point: mop.id, miles: mop.miles } : null },
       waterTemp: { f: waterF, source: waterSrc },
       tide:  { station: tn.st.id, stationName: tn.st.name, miles: +tn.d.toFixed(1), hilo: tides[tn.st.id] },
       hourly:{ time: fh.time || [], airF: fh.temperature_2m || [], windMph: fh.wind_speed_10m || [],
-               windDir: fh.wind_direction_10m || [], uv: fh.uv_index || [], waveFt: (mh.wave_height || []).map(M2FT),
+               windDir: fh.wind_direction_10m || [], uv: fh.uv_index || [], waveFt: hourlyWave,
                rainProb: fh.precipitation_probability || [], rainIn: fh.precipitation || [] },   // 72 hours: today, tomorrow, the day after
       sun:   { sunrise: daily.sunrise?.[0] ?? null, sunset: daily.sunset?.[0] ?? null },
       days:  (daily.time || []).map((d, k) => ({ date: d, sunrise: daily.sunrise?.[k] ?? null, sunset: daily.sunset?.[k] ?? null, uvMax: daily.uv_index_max?.[k] ?? null,
