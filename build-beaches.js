@@ -52,8 +52,8 @@ const daysAgo = iso => iso == null ? null : Math.round((Date.now() - new Date(is
 const wait = ms => new Promise(r => setTimeout(r, ms));
 async function get(u){
   let err;
-  for (let i = 0; i < 3; i++) {
-    if (i) await wait(4000 * i);
+  for (let i = 0; i < 5; i++) {        // 5 tries over ~1 min (Open-Meteo timed out on all 3 quick tries, 2026-11-17)
+    if (i) await wait([0, 5000, 10000, 20000, 30000][i]);
     try {
       const r = await fetch(u, { headers: UA });
       if (r.ok) return r;
