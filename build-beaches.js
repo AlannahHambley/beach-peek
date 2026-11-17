@@ -114,6 +114,24 @@ function rainFor(b, rain3){
   return g ? { gauge: g.x.name, gaugeId: g.x.id, miles: +g.d.toFixed(1), last72in: rain3[g.x.id], recent: GAUGE_RECENT[g.x.id] || null, source: 'Santa Barbara County Flood Control rain gauge, past 3 days' } : null;
 }
 
+// ---- the last published files (fallback when Open-Meteo is down) ----
+const PAGES = 'https://alannahhambley.github.io/beach-peek/out/';
+async function lastPublished(id){ try { const r = await fetch(PAGES + id + '.json?t=' + Date.now(), { headers: UA }); return r.ok ? await r.json() : null; } catch (e) { return null; } }
+// rebuild the shape of one Open-Meteo forecast entry from a published beach file (same units: °F, mph, in)
+function weatherFromDoc(d){
+  if (!d) return {};
+  const h = d.hourly || {}, days = d.days || [];
+  const t0 = (h.time || [])[0];
+  // the local UTC offset for the published day (America/Los_Angeles), so hour stamps line up
+  const off = t0 ? (() => { const ms = Date.parse(t0 + 'Z'); const la = new Date(new Date(ms).toLocaleString('en-US', { timeZone: 'America/Los_Angeles' })); const utc = new Date(new Date(ms).toLocaleString('en-US', { timeZone: 'UTC' })); return Math.round((la - utc) / 1000); })() : -28800;
+  return {
+    utc_offset_seconds: off,
+    current: { temperature_2m: d.air && d.air.tempF, uv_index: d.air && d.air.uv, wind_speed_10m: d.wind && d.wind.mph, wind_direction_10m: d.wind && d.wind.dir },
+    hourly: { time: h.time || [], temperature_2m: h.airF || [], wind_speed_10m: h.windMph || [], wind_direction_10m: h.windDir || [], uv_index: h.uv || [], precipitation_probability: h.rainProb || [], precipitation: h.rainIn || [] },
+    daily: { time: days.map(x => x.date), sunrise: days.map(x => x.sunrise), sunset: days.map(x => x.sunset), uv_index_max: days.map(x => x.uvMax), precipitation_probability_max: days.map(x => x.rainProbMax), precipitation_sum: days.map(x => x.rainIn) },
+  };
+}
+
 // ---- waves at the beach: CDIP MOP (Scripps), not the open-ocean model ----
 // The open-ocean model (Open-Meteo Marine) read ~3× too high here: the Channel Islands and Point
 // Conception block most swell. CDIP's MOP model gives the height just off each stretch of shore
@@ -236,24 +254,38 @@ function tarEstimate({ waveFt, swellDir, windDir, windMph }){
   // 2) Open-Meteo forecast + marine — ONE multi-location call each
   const lats = beaches.map(b => b.lat).join(',');
   const lons = beaches.map(b => b.lon).join(',');
-  const fc = await getJSON(`https://api.open-meteo.com/v1/forecast?latitude=${lats}&longitude=${lons}&current=temperature_2m,wind_speed_10m,wind_direction_10m,uv_index&hourly=temperature_2m,wind_speed_10m,wind_direction_10m,uv_index,precipitation_probability,precipitation&daily=sunrise,sunset,uv_index_max,precipitation_sum,precipitation_probability_max&temperature_unit=fahrenheit&wind_speed_unit=mph&precipitation_unit=inch&timezone=America%2FLos_Angeles&forecast_days=3`);
-  const mar = await getJSON(`https://marine-api.open-meteo.com/v1/marine?latitude=${lats}&longitude=${lons}&current=wave_height,wave_period,wave_direction,sea_surface_temperature&hourly=wave_height,wave_period,wave_direction&timezone=America%2FLos_Angeles&forecast_days=3`);
-  const fcArr = Array.isArray(fc) ? fc : [fc];
-  const marArr = Array.isArray(mar) ? mar : [mar];
-  console.log('  open-meteo: forecast '+fcArr.length+' · marine '+marArr.length);
+  // If Open-Meteo can't be reached (it timed out on four runs overnight 2026-11-17), don't fail the
+  // whole run: publish everything else and reuse the last published weather for each beach (its
+  // forecast still covers the next days). index.json says so (weatherFrom / weatherUpdated).
+  let fc = null, mar = null, weatherFrom = 'live';
+  try {
+    fc = await getJSON(`https://api.open-meteo.com/v1/forecast?latitude=${lats}&longitude=${lons}&current=temperature_2m,wind_speed_10m,wind_direction_10m,uv_index&hourly=temperature_2m,wind_speed_10m,wind_direction_10m,uv_index,precipitation_probability,precipitation&daily=sunrise,sunset,uv_index_max,precipitation_sum,precipitation_probability_max&temperature_unit=fahrenheit&wind_speed_unit=mph&precipitation_unit=inch&timezone=America%2FLos_Angeles&forecast_days=3`);
+  } catch (e) { console.log('  open-meteo forecast: ' + e.message + ' — reusing the last published weather'); weatherFrom = 'last'; }
+  try {
+    mar = await getJSON(`https://marine-api.open-meteo.com/v1/marine?latitude=${lats}&longitude=${lons}&current=wave_height,wave_period,wave_direction,sea_surface_temperature&hourly=wave_height,wave_period,wave_direction&timezone=America%2FLos_Angeles&forecast_days=3`);
+  } catch (e) { console.log('  open-meteo marine: ' + e.message + ' — waves come from CDIP anyway'); }
+  const prev = {}, prevIndex = weatherFrom === 'last' ? await lastPublished('index') : null;
+  if (weatherFrom === 'last') for (const b of beaches) prev[b.id] = await lastPublished(b.id);
+  const fcArr = fc ? (Array.isArray(fc) ? fc : [fc]) : beaches.map(b => weatherFromDoc(prev[b.id]));
+  const marArr = mar ? (Array.isArray(mar) ? mar : [mar]) : beaches.map(() => ({}));
+  const weatherUpdated = weatherFrom === 'live' ? new Date().toISOString() : ((prevIndex && (prevIndex.weatherUpdated || prevIndex.updated)) || null);
+  console.log('  open-meteo: forecast '+(fc ? fcArr.length : 'reused')+' · marine '+(mar ? marArr.length : 'skipped'));
 
   // 3) shared feeds: NWS alerts + tides + both buoys
-  const alerts = await getJSON(`https://api.weather.gov/alerts/active?zone=${NWS_ZONE}`);
+  // NWS down (503 on 2026-11-17): keep the last published rip status rather than failing the run
+  let alerts = null;
+  try { alerts = await getJSON(`https://api.weather.gov/alerts/active?zone=${NWS_ZONE}`); } catch (e) { console.log('  nws alerts: ' + e.message + ' — keeping the last published rip status'); }
+  const lastIdx = alerts ? null : (prevIndex || await lastPublished('index'));
   // ONLY alerts about the water count. (This used to fall back to the first alert of any
   // kind, so a heat or wind advisory was reported as a rip warning — fixed 2026-10-12.)
   const about = f => (f.properties.event || '') + ' ' + (f.properties.headline || '') + ' ' + (f.properties.description || '');
-  const watery = alerts.features.filter(f => /rip current|beach hazard|high surf/i.test(f.properties.event || ''));
+  const watery = (alerts ? alerts.features : []).filter(f => /rip current|beach hazard|high surf/i.test(f.properties.event || ''));
   const rip = watery.find(f => /rip current/i.test(about(f))) || watery[0] || null;
   const tidy = s => (s || '').replace(/\s*\n\s*/g, ' ').replace(/\s+/g, ' ').trim() || null;
   const ripOut = rip ? { active: true, event: rip.properties.event, headline: rip.properties.headline,
                          description: tidy(rip.properties.description), instruction: tidy(rip.properties.instruction),
                          issued: rip.properties.sent || null, sender: rip.properties.senderName || null,
-                         until: rip.properties.ends || rip.properties.expires, zone: NWS_ZONE } : { active: false };
+                         until: rip.properties.ends || rip.properties.expires, zone: NWS_ZONE } : (alerts ? { active: false } : ((lastIdx && lastIdx.rip) || { active: false }));
   // RAIN, measured: Santa Barbara County Flood Control's gauges (rain.cosbpw.net), 3-day totals.
   // Each beach uses its nearest low-elevation coastal gauge. (The weather model invented a
   // 0.38 in shower at Hendry's on 2026-10-14 that no gauge saw, so the model isn't used.)
@@ -261,8 +293,11 @@ function tarEstimate({ waveFt, swellDir, windDir, windMph }){
   console.log('  rain gauges: ' + (rain3 ? Object.keys(rain3).length + ' read' : 'skipped'));
   const tides = {};
   for (const st of TIDE_STATIONS) {
-    const tideJson = await getJSON(`https://api.tidesandcurrents.noaa.gov/api/prod/datagetter?product=predictions&application=beachpeek&begin_date=${ymdBefore}&end_date=${ymdAfter}&datum=MLLW&station=${st.id}&time_zone=lst_ldt&units=english&interval=hilo&format=json`);
-    tides[st.id] = (tideJson.predictions || []).map(p => ({ time: p.t, type: p.type === 'H' ? 'high' : 'low', ft: +p.v }));
+    let tideJson = null;
+    try { tideJson = await getJSON(`https://api.tidesandcurrents.noaa.gov/api/prod/datagetter?product=predictions&application=beachpeek&begin_date=${ymdBefore}&end_date=${ymdAfter}&datum=MLLW&station=${st.id}&time_zone=lst_ldt&units=english&interval=hilo&format=json`);
+    } catch (e) { console.log('  tides ' + st.id + ': ' + e.message + ' — reusing the last published tides'); }
+    if (tideJson) tides[st.id] = (tideJson.predictions || []).map(p => ({ time: p.t, type: p.type === 'H' ? 'high' : 'low', ft: +p.v }));
+    else { const near = beaches.map(b => ({ b, d: milesBetween(b, st) })).sort((p, q) => p.d - q.d)[0]; const doc = near ? (prev[near.b.id] || await lastPublished(near.b.id)) : null; tides[st.id] = (doc && doc.tide && doc.tide.hilo) || []; }
   }
   const tideFor = b => TIDE_STATIONS.map(st => ({ st, d: milesBetween(b, st) })).sort((p, q) => p.d - q.d)[0];
   const buoys = { '46053': await buoyLatest('46053'), '46054': await buoyLatest('46054') };
@@ -325,7 +360,7 @@ function tarEstimate({ waveFt, swellDir, windDir, windMph }){
                  tar: doc.tar.level });
   });
 
-  fs.writeFileSync(path.join(OUT, 'index.json'), JSON.stringify({ updated, zone: NWS_ZONE, tideStation: TIDE_STATION, tideStations: TIDE_STATIONS, rip: ripOut, beaches: index, unsampled }, null, 2));
+  fs.writeFileSync(path.join(OUT, 'index.json'), JSON.stringify({ updated, weatherFrom, weatherUpdated, zone: NWS_ZONE, tideStation: TIDE_STATION, tideStations: TIDE_STATIONS, rip: ripOut, beaches: index, unsampled }, null, 2));
   console.log('  wrote '+(beaches.length+1)+' files to out/\n');
   console.table(index.concat(unsampled).map(b => ({ beach: b.name, water: b.water, airF: b.airF, waveFt: b.waveFt, wind: b.windMph, waterF: b.waterF, tar: b.tar })));
 })();
